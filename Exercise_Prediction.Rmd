@@ -1,0 +1,189 @@
+---
+title: "Exercise Prediction"
+date: "March 27, 2016"
+output: html_document
+---
+
+## Purpose
+
+While sensors collect a large amount of data about how much of a particular activity people do, these tools rarely quantify how well they do it. 
+
+This analysis will use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. These participants were asked to perform barbell lifts correctly and incorrectly in 5 different ways. 
+
+The goal of this analysis is to predict the manner in which participants did the exercise, indicated by the `classe` variable. 
+
+## Data
+
+Information on the data collection design is available from the [Human Activity Recognition](http://groupware.les.inf.puc-rio.br/har) website (*see the section on the Weight Lifting Exercise Dataset*).
+
+### Reading it in
+We read in the training and testing data files from the site referenced above:
+```{r, warning=FALSE,error=FALSE,results='hide',message=FALSE}
+library(caret)
+
+training <- read.csv("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv", 
+                     na.strings = c("NA",""," "))
+
+testing <- read.csv("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv", 
+                    na.strings = c("NA",""," "))
+```
+
+### Munging
+First we remove columns from the training set where most (i.e >= 90%) of the observations are `NA`...
+```{r, warning=FALSE,error=FALSE,results='hide',message=FALSE}
+training <- training[, colSums(is.na(training)) <= (0.10 * nrow(training))]
+```
+
+... and columns with zero or near-zero variance
+```{r, warning=FALSE,error=FALSE,message=FALSE}
+nzv <- nearZeroVar(training)
+training <- training[, -nzv]
+
+print(paste0("Removed ", length(nzv), " columns with near-zero variance."))
+
+```
+
+... and other factor and index columns
+```{r, warning=FALSE,error=FALSE,results='hide',message=FALSE}
+library(dplyr); library(magrittr)
+training %<>% select(-X, -user_name, -raw_timestamp_part_1,
+                     -raw_timestamp_part_2, -cvtd_timestamp, 
+                     -num_window)
+```
+
+We then removed descriptors with absolute correlations above 0.9 :
+```{r, warning=FALSE,error=FALSE,results='hide',message=FALSE}
+descrCor <-  cor(training %>% select(-classe))
+
+highlyCorDescr <- findCorrelation(descrCor, cutoff = .9)
+
+training <- training[,-highlyCorDescr]
+
+```
+
+This leaves us with `r length(names(training))` variables.
+
+## How the model was built
+
+### Cross-validation
+
+#### Split training set into training/testing subsets
+
+Our first step is to partition the training data so that we can use it on testing, while holding out the test set for validation.
+```{r, warning=FALSE,error=FALSE,results='hide',message=FALSE}
+library(caret)
+
+trainIndex <- createDataPartition(training$classe, p = 0.7, list = FALSE)
+train_train <- training[trainIndex,]
+train_test <- training[-trainIndex,]
+```
+
+
+## Training Models
+
+First, we'll define some controls for the training function:
+```{r, warning=FALSE,error=FALSE,results='hide',message=FALSE}
+fitControl <- trainControl(method = "cv", 
+                           number = 10, 
+                           repeats = 3,
+                           selectionFunction = "best")
+```
+Setting these parameters allows us to do cross-validation across multiple folds and to build a model on each training subset and then evaluate on each test subset.  Here, we select the "best" model because we're aiming for one-shot accuracy in the class rather than scalability.
+
+Then we'll build several models for comparison:
+(*Note: To avoid timely processing, the model were run using the commented out commands and saved locally, then loaded to produce the markdown file.*)
+
+### Decision tree
+```{r, warning=FALSE,error=FALSE,results='hide',message=FALSE}
+set.seed(123)
+modelFit_tree <- train(classe ~ .,
+                       data = train_train,
+                       method = "rpart",
+                       trControl = fitControl)
+
+# saveRDS(modelFit_tree, "modelFit_tree.rds")
+# 
+# modelFit_tree <- readRDS("modelFit_tree.rds")
+
+```
+
+### Random forest
+```{r, warning=FALSE,error=FALSE,results='hide',message=FALSE}
+set.seed(123)
+modelFit_rf <- train(classe ~ .,
+                     data = train_train,
+                     method = "rf",
+                     trControl = fitControl)
+
+# saveRDS(modelFit_rf, "modelFit_rf.rds")
+# 
+# modelFit_rf <- readRDS("modelFit_rf.rds")
+```
+
+### Support vector machine (SVM)
+```{r, warning=FALSE,error=FALSE,results='hide',message=FALSE}
+set.seed(123)
+modelFit_svm <- train(classe ~ .,
+                      data = train_train,
+                      method = "svmRadial",
+                      trControl = fitControl)
+
+# saveRDS(modelFit_svm, "modelFit_svm.rds")
+# 
+# modelFit_svm <- readRDS("modelFit_svm.rds")
+
+```
+
+### Generalized Boosted Regression Model (GBM)
+```{r, warning=FALSE,error=FALSE,results='hide',message=FALSE}
+set.seed(123)
+modelFit_gbm <- train(classe ~ .,
+                     data = train_train,
+                     method = "gbm",
+                     trControl = fitControl)
+
+# saveRDS(modelFit_gbm, "modelFit_gbm.rds")
+# 
+# modelFit_gbm <- readRDS("modelFit_gbm.rds")
+
+```
+
+### Comparison of Models
+
+
+```{r, warning=FALSE,error=FALSE,message=FALSE}
+results <- resamples(list(tree = modelFit_tree, 
+                          RF = modelFit_rf, 
+                          SVM = modelFit_svm,
+                          GBM = modelFit_gbm))
+
+# summary(results)
+bwplot(results, layout = c(3, 1))
+
+```
+
+We compare model performance across the models we fit using the distribution of accuracy and kappa scores across the models, which demonstrates that the random forest model (RF) outperforms all of the other models used. The expected out-of-sample error rate for the random forest model is `r 100 - 0.9918`
+
+The importance of variables contributing to this model is shown below:
+```{r, warning=FALSE,error=FALSE,results='hide',message=FALSE}
+varImp(modelFit_rf, scale = FALSE)
+varImpObj <- varImp(modelFit_rf)
+plot(varImpObj, main = "Variable Importance")
+```
+
+
+## Applying Model to Test Set
+
+Finally, we apply our prediction model to predict the testing dataset.  
+
+```{r, warning=FALSE,error=FALSE,results='hide',message=FALSE}
+predict_test <- predict(modelFit_rf, newdata = testing)
+
+testing$predict <- predict_test
+
+submit <- testing %>% select(problem_id, predict)
+
+```
+
+
+
